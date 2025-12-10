@@ -1,6 +1,6 @@
 # leavesync mobile
 
-A new Flutter project.
+An Official Apps for Staff Enetech Apply Leave 
 
 ## Getting Started
 
