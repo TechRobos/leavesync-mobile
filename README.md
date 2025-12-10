@@ -1,4 +1,4 @@
-# leavesync
+# leavesync mobile
 
 A new Flutter project.
 
