@@ -8,6 +8,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:leavesync/pages/dashboard/dashboard_page.dart';
 import 'package:leavesync/pages/leave/apply_leave_page.dart';
 import 'package:leavesync/pages/leave/leave_history_page.dart';
+import 'package:leavesync/services/api_service.dart';
+import 'package:leavesync/config/api_config.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -35,7 +37,6 @@ class _ProfilePageState extends State<ProfilePage> {
   void initState() {
     super.initState();
     loadUserProfile();
-    fetchUserFromAPI();
   }
 
   Future<void> loadUserProfile() async {
@@ -46,8 +47,10 @@ class _ProfilePageState extends State<ProfilePage> {
     emailController.text = prefs.getString("userEmail") ?? "Unknown";
 
     final photo = prefs.getString("userPhoto");
-    if (photo != null) {
-      networkImageUrl = "http://192.168.0.55:8000/storage/$photo";
+    if (photo != null && photo.isNotEmpty) {
+      networkImageUrl = "${ApiConfig.storageUrl}/$photo";
+    } else {
+      networkImageUrl = null;
     }
   });
 }
@@ -69,24 +72,38 @@ void _updateProfile() async {
 
   var request = http.MultipartRequest(
     'POST',
-    Uri.parse("http://192.168.0.55:8000/api/user/profile/update"),
+    ApiService.updateProfile(),
   );
 
-  request.headers['Authorization'] = "Bearer $token";
+  request.headers.addAll({
+    "Authorization": "Bearer $token",
+    "Accept": "application/json",
+  });
 
   request.fields['name'] = nameController.text;
   request.fields['email'] = emailController.text;
 
   if (passwordController.text.isNotEmpty &&
-      passwordController.text == confirmPasswordController.text) {
-    request.fields['password'] = passwordController.text;
-  }
+    passwordController.text != confirmPasswordController.text) {
+  ScaffoldMessenger.of(context).showSnackBar(
+    const SnackBar(content: Text("Password & confirm password tidak sama")),
+  );
+  return;
+}
 
   if (_profileImage != null) {
     request.files.add(await http.MultipartFile.fromPath(
       'photo',
       _profileImage!.path,
     ));
+  }
+
+  if (passwordController.text.isNotEmpty) {
+    request.fields['password'] = passwordController.text;
+  }
+
+  if (confirmPasswordController.text.isNotEmpty) {
+    request.fields['password_confirmation'] = confirmPasswordController.text;
   }
 
   final response = await request.send();
@@ -107,22 +124,29 @@ void _updateProfile() async {
       prefs.setString("userPhoto", res["user"]["photo"]);
     }
 
-    await fetchUserFromAPI();
-
     // Refresh UI selepas update
     setState(() {
-      nameController.text = res["user"]["name"];
-      emailController.text = res["user"]["email"];
-      if (res["user"]["photo"] != null) {
-        networkImageUrl =
-            "http://192.168.0.55:8000/storage/${res["user"]["photo"]}";
-      }
-    });
+  nameController.text = res["user"]["name"];
+  emailController.text = res["user"]["email"];
 
-    _showSuccessDialog();
-  } else {
-    print("Update failed: $responseBody");
+  _profileImage = null; // buang local preview
+
+  if (res["user"]["photo"] != null &&
+      res["user"]["photo"].toString().isNotEmpty) {
+    networkImageUrl = "${ApiConfig.storageUrl}/${res["user"]["photo"]}";
   }
+  // ❗ JANGAN else → biar gambar lama kekal
+});
+    // Tunjuk dialog success
+    if (!mounted) return;
+    _showSuccessDialog();
+    
+  } else {
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text("Update failed: ${response.statusCode}")),
+  );
+}
+  if (!mounted) return;
 }
 
 Future<void> fetchUserFromAPI() async {
@@ -130,7 +154,7 @@ Future<void> fetchUserFromAPI() async {
   final token = prefs.getString("token");
 
   final response = await http.get(
-    Uri.parse("http://192.168.0.55:8000/api/user/profile"),
+    ApiService.profile(),
     headers: {"Authorization": "Bearer $token"},
   );
 
@@ -141,15 +165,19 @@ Future<void> fetchUserFromAPI() async {
 
     if (!mounted) return;
 
-    await prefs.setString("userName", res["data"]["name"]);
-    await prefs.setString("userEmail", res["data"]["email"]);
-    await prefs.setString("userPhoto", res["data"]["photo"] ?? "");
+    await prefs.setString("userName", res["user"]["name"]);
+    await prefs.setString("userEmail", res["user"]["email"]);
+   
+    if (res["user"]["photo"] != null && res["user"]["photo"].toString().isNotEmpty) {
+      await prefs.setString("userPhoto", res["user"]["photo"]);
+    }
+    // Refresh UI with fetched data
+    if (!mounted) return;
 
     setState(() {
-      nameController.text = res["data"]["name"];
-      emailController.text = res["data"]["email"];
-      networkImageUrl =
-          "http://192.168.0.55:8000/storage/${res["data"]["photo"]}";
+      nameController.text = res["user"]["name"];
+      emailController.text = res["user"]["email"];
+      networkImageUrl = "${ApiConfig.storageUrl}/${res["user"]["photo"]}";
     });
   }
 
