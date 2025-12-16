@@ -1,11 +1,25 @@
 // lib/pages/dashboard/dashboard_page.dart
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
-import 'package:table_calendar/table_calendar.dart';
-import 'dart:convert';
-import 'package:http/http.dart' as http;
+import 'package:syncfusion_flutter_calendar/calendar.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
+import 'package:leavesync/services/api_service.dart';
 
+
+// ============================================================================
+// DATA SOURCE UNTUK SYNCFUSION CALENDAR
+// ============================================================================
+class LeaveDataSource extends CalendarDataSource {
+  LeaveDataSource(List<Appointment> source) {
+    appointments = source;
+  }
+}
+
+// ============================================================================
+// MAIN PAGE
+// ============================================================================
 class DashboardPage extends StatefulWidget {
   const DashboardPage({super.key});
 
@@ -26,15 +40,14 @@ class _DashboardPageState extends State<DashboardPage> {
 
   int totalQuota = 10;
   int usedQuota = 0;
-
   int get balanceQuota => totalQuota - usedQuota;
 
   int _selectedIndex = 0;
 
-  // CALENDAR VARIABLES
-  CalendarFormat _calendarFormat = CalendarFormat.month;
-  DateTime _focusedDay = DateTime.now();
-  DateTime? _selectedDay;
+  List<Appointment> leaveAppointments = [];
+  Map<DateTime, List<String>> holidays = {};
+
+  List<TimeRegion> holidayRegions = [];
 
   @override
   void initState() {
@@ -42,158 +55,403 @@ class _DashboardPageState extends State<DashboardPage> {
     loadToken();
   }
 
+  // ---------------------------------------------------------------------------
   Future<void> loadToken() async {
     final prefs = await SharedPreferences.getInstance();
     token = prefs.getString('token');
 
     if (token != null) {
-      fetchUserData();
-      fetchLeaveSummary();
-    } else {
-      print("Token tiada! Anda belum login.");
+      fetchAllData();
     }
   }
 
+  // ---------------------------------------------------------------------------
+  Future<void> fetchAllData() async {
+    try {
+      await Future.wait([
+        fetchUserData(),
+        fetchLeaveSummary(),
+        fetchHolidays(),
+        fetchLeaveEvents(),
+      ]);
+    } catch (e) {
+      print("ERROR fetchAllData: $e");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   Future<void> fetchUserData() async {
-    final url = Uri.parse("http://192.168.0.55:8000/api/profile");
+    try {
 
-    final response = await http.get(
-      url,
-      headers: {
-        "Accept": "application/json",
-        "Authorization": "Bearer $token",
-      },
-    );
+      final response = await http.get(
+        ApiService.profile(),
+        headers: {
+          "Accept": "application/json",
+          "Authorization": "Bearer $token",
+        },
+      );
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
 
-      setState(() {
-        userName = data['name'] ?? "";
-        userEmail = data['email'] ?? "";
-        memberSince = data['created_at'] ?? "";
-      });
-    } else {
-      print("Gagal fetch user data: ${response.body}");
+setState(() {
+  userName = data['data']['name'] ?? "";
+  userEmail = data['data']['email'] ?? "";
+  memberSince = data['data']['created_at'] ?? "";
+});
+
+      }
+    } catch (e) {
+      print("ERROR fetchUserData: $e");
     }
   }
 
+  // ---------------------------------------------------------------------------
   Future<void> fetchLeaveSummary() async {
-    final url = Uri.parse("http://192.168.0.55:8000/api/leave-request");
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      int? userId = prefs.getInt("userId");
+      if (userId == null) return;
 
-    final response = await http.get(
-      url,
-      headers: {
-        "Accept": "application/json",
-        "Authorization": "Bearer $token",
-      },
-    );
+      final response = await http.get(
+  ApiService.leaveSummary(userId),
+  headers: {
+    "Accept": "application/json",
+    "Authorization": "Bearer $token",
+  },
+);
 
-    if (!mounted) return;
+      if (!mounted) return;
 
-    if (response.statusCode == 200) {
-      final data = jsonDecode(response.body);
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
 
-      setState(() {
-        pending = data['pending'] ?? 0;
-        approved = data['approved'] ?? 0;
-        rejected = data['rejected'] ?? 0;
-        usedQuota = data['used_quota'] ?? 0;
-        totalQuota = data['total_quota'] ?? 12;
-      });
-    } else {
-      print("Gagal fetch summary: ${response.body}");
+        setState(() {
+          pending = (data['pending'] ?? 0);
+          approved = (data['approved'] ?? 0);
+          rejected = (data['rejected'] ?? 0);
+          usedQuota = (data['used_quota'] ?? 0);
+          totalQuota = (data['total_quota'] ?? 10);
+        });
+      }
+    } catch (e) {
+      print("ERROR fetchLeaveSummary: $e");
     }
   }
 
-  void _onNavTap(int index) {
-    setState(() {
-      _selectedIndex = index;
-    });
+  // ---------------------------------------------------------------------------
+  Future<void> fetchHolidays() async {
+    try {
+      final response = await http.get(
+  ApiService.holidays(),
+  headers: {
+    "Accept": "application/json",
+  },
+);
 
-    switch (index) {
-      case 0:
-        Navigator.pushReplacementNamed(context, '/dashboard');
-        break;
-      case 1:
-        Navigator.pushReplacementNamed(context, '/apply');
-        break;
-      case 2:
-        Navigator.pushReplacementNamed(context, '/history');
-        break;
-      case 3:
-        Navigator.pushReplacementNamed(context, '/profile');
-        break;
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final List raw = jsonDecode(response.body);
+
+        Map<DateTime, List<String>> temp = {};
+        List<TimeRegion> regions = [];
+
+        for (var item in raw) {
+          DateTime date = DateTime.parse(item['date']);
+          DateTime key = DateTime(date.year, date.month, date.day);
+
+          String holidayName = (item['name'] ?? "");
+
+          temp.putIfAbsent(key, () => []);
+          temp[key]!.add(holidayName);
+
+          regions.add(
+            TimeRegion(
+              startTime: key,
+              endTime: key.add(const Duration(days: 1)),
+              enablePointerInteraction: false,
+              color: Colors.red.withOpacity(0.25),
+              text: holidayName,
+              textStyle: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 10),
+            ),
+          );
+        }
+
+        setState(() {
+          holidays = temp;
+          holidayRegions = regions;
+        });
+      }
+    } catch (e) {
+      print("ERROR fetchHolidays: $e");
     }
   }
 
-  Widget statusBox(String title, int count, Color color) {
-    return Container(
-      width: 100,
-      padding: const EdgeInsets.symmetric(vertical: 16),
-      decoration: BoxDecoration(
-        color: const Color(0xFF2E2A61),
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Column(
-        children: [
-          Text(
-            count.toString(),
-            style: TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.bold,
+  // ---------------------------------------------------------------------------
+  Future<void> fetchLeaveEvents() async {
+    try {
+      final response = await http.get(
+  ApiService.leaveEvents(),
+  headers: {
+    "Accept": "application/json",
+    "Authorization": "Bearer $token",
+  },
+);
+
+      if (!mounted) return;
+
+      if (response.statusCode == 200) {
+        final List data = jsonDecode(response.body);
+        List<Appointment> temp = [];
+
+        for (var item in data) {
+          DateTime start = DateTime.parse(item['start_date']);
+          DateTime end = DateTime.parse(item['end_date']);
+
+          Color color;
+          switch ((item["status"] ?? "").toString().toLowerCase()) {
+            case "approved":
+              color = Colors.green;
+              break;
+            case "pending":
+              color = Colors.orange;
+              break;
+            case "rejected":
+              color = Colors.red;
+              break;
+            default:
+              color = Colors.grey;
+          }
+
+          temp.add(
+            Appointment(
+              startTime: start,
+              endTime: end.add(const Duration(days: 1)),
+              subject: "${item['user_name']} (${item['type']})",
               color: color,
+              isAllDay: true, // Penting untuk multi-day bar
+            ),
+          );
+        }
+
+        setState(() => leaveAppointments = temp);
+      }
+    } catch (e) {
+      print("ERROR fetchLeaveEvents: $e");
+    }
+  }
+
+  // ===========================================================================
+  // CUSTOM MONTH VIEW BUILDER — PAPAR BAR + TEXT
+  // ===========================================================================
+  Widget monthCellBuilder(BuildContext context, MonthCellDetails details) {
+  final DateTime date = details.date;
+  final List<Appointment> apps =
+      details.appointments.cast<Appointment>();
+
+  const int maxVisible = 2; // <<< HAD APPOINTMENT
+  final visibleApps = apps.take(maxVisible).toList();
+  final hiddenCount = apps.length - visibleApps.length;
+
+  return Container(
+    decoration: BoxDecoration(
+      border: Border.all(color: Colors.white24),
+    ),
+    padding: const EdgeInsets.all(4),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // TARIKH
+        Text(
+          date.day.toString(),
+          style: const TextStyle(color: Colors.white70, fontSize: 12),
+        ),
+        const SizedBox(height: 2),
+
+        // APPOINTMENT YANG MUAT SAHAJA
+        for (var appt in visibleApps)
+          GestureDetector(
+            onTap: () => showLeavePopup(appt),
+            child: Container(
+              width: double.infinity,
+              height: 18,
+              margin: const EdgeInsets.only(bottom: 2),
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              decoration: BoxDecoration(
+                color: appt.color,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                appt.subject,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis, // <<< POTONG ELOK
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
           ),
-          const SizedBox(height: 6),
-          Text(
-            title,
-            style: const TextStyle(color: Colors.white),
+
+        // JIKA ADA YANG TERSEMBUNYI
+        if (hiddenCount > 0)
+          GestureDetector(
+            onTap: () => showDayPopup(date, apps),
+            child: Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                "+$hiddenCount more",
+                style: const TextStyle(
+                  color: Colors.white54,
+                  fontSize: 10,
+                  fontStyle: FontStyle.italic,
+                ),
+              ),
+            ),
           ),
+      ],
+    ),
+  );
+}
+
+void showLeavePopup(Appointment appt) {
+  showDialog(
+    context: context,
+    builder: (_) => AlertDialog(
+      backgroundColor: const Color(0xFF2E2A61),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+      ),
+      title: const Text(
+        "Leave Detail",
+        style: TextStyle(color: Colors.white),
+      ),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          infoRow("Name", appt.subject),
+          infoRow(
+            "From",
+            formatDatePretty(appt.startTime.toIso8601String()),
+          ),
+          infoRow(
+            "To",
+            formatDatePretty(
+              appt.endTime.subtract(const Duration(days: 1)).toIso8601String(),
+            ),
+          ),
+          infoRow("Status", statusFromColor(appt.color)),
         ],
       ),
-    );
-  }
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text(
+            "Close",
+            style: TextStyle(color: Colors.redAccent),
+          ),
+        )
+      ],
+    ),
+  );
+}
 
-  String formatDatePretty(String isoString) {
-  try {
-    final date = DateTime.parse(isoString).toLocal();
+Widget infoRow(String label, String value) {
+  return Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Row(
+      children: [
+        SizedBox(
+          width: 70,
+          child: Text(
+            "$label:",
+            style: const TextStyle(color: Colors.white70),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: const TextStyle(color: Colors.white),
+          ),
+        ),
+      ],
+    ),
+  );
+}
 
-    const monthNames = [
-      "", // dummy index 0
-      "January",
-      "February",
-      "March",
-      "April",
-      "May",
-      "June",
-      "July",
-      "August",
-      "September",
-      "October",
-      "November",
-      "December",
-    ];
+String statusFromColor(Color c) {
+  if (c == Colors.green) return "Approved";
+  if (c == Colors.orange) return "Pending";
+  if (c == Colors.red) return "Rejected";
+  return "Unknown";
+}
 
-    return "${date.day} ${monthNames[date.month]} ${date.year}";
-  } catch (e) {
-    return isoString;
-  }
+void showDayPopup(DateTime date, List<Appointment> apps) {
+  showModalBottomSheet(
+    context: context,
+    backgroundColor: const Color(0xFF2E2A61),
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (_) => Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            "Leaves on ${formatDatePretty(date.toIso8601String())}",
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          for (var appt in apps)
+            ListTile(
+              leading: CircleAvatar(
+                backgroundColor: appt.color,
+                radius: 6,
+              ),
+              title: Text(
+                appt.subject,
+                style: const TextStyle(color: Colors.white),
+              ),
+              onTap: () {
+                Navigator.pop(context);
+                showLeavePopup(appt);
+              },
+            ),
+        ],
+      ),
+    ),
+  );
 }
 
 
+  // ===========================================================================
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF090A29),
+
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+
               // HEADER
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -206,6 +464,7 @@ class _DashboardPageState extends State<DashboardPage> {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
+
                   Column(
                     children: [
                       Image.asset(
@@ -228,7 +487,7 @@ class _DashboardPageState extends State<DashboardPage> {
 
               const SizedBox(height: 20),
 
-              // USER CARD
+              // USER INFO CARD
               Card(
                 color: const Color(0xFF2E2A61),
                 shape: RoundedRectangleBorder(
@@ -245,7 +504,8 @@ class _DashboardPageState extends State<DashboardPage> {
                   ),
                   subtitle: Text(
                     "$userEmail\nMember since: ${formatDatePretty(memberSince)}",
-                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                    style:
+                        const TextStyle(color: Colors.white70, fontSize: 12),
                   ),
                 ),
               ),
@@ -256,9 +516,9 @@ class _DashboardPageState extends State<DashboardPage> {
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  statusBox("Pending", pending, Colors.yellow),
-                  statusBox("Approved", approved, Colors.green),
-                  statusBox("Rejected", rejected, Colors.redAccent),
+                  statusBox("pending", pending, Colors.yellow),
+                  statusBox("approved", approved, Colors.green),
+                  statusBox("rejected", rejected, Colors.redAccent),
                 ],
               ),
 
@@ -282,7 +542,9 @@ class _DashboardPageState extends State<DashboardPage> {
                         fontWeight: FontWeight.bold,
                       ),
                     ),
+
                     const SizedBox(height: 20),
+
                     SizedBox(
                       height: 180,
                       child: Stack(
@@ -304,7 +566,7 @@ class _DashboardPageState extends State<DashboardPage> {
                                   value: balanceQuota.toDouble(),
                                   showTitle: false,
                                   radius: 40,
-                                )
+                                ),
                               ],
                             ),
                           ),
@@ -322,7 +584,7 @@ class _DashboardPageState extends State<DashboardPage> {
                               const Text(
                                 "Used",
                                 style: TextStyle(color: Colors.white70),
-                              )
+                              ),
                             ],
                           )
                         ],
@@ -334,67 +596,51 @@ class _DashboardPageState extends State<DashboardPage> {
 
               const SizedBox(height: 25),
 
-              // CALENDAR
+              // ========================
+              //       CALENDAR
+              // ========================
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
                   color: const Color(0xFF2E2A61),
                   borderRadius: BorderRadius.circular(20),
                 ),
-                child: TableCalendar(
-                  firstDay: DateTime.utc(2020, 1, 1),
-                  lastDay: DateTime.utc(2030, 12, 31),
-                  focusedDay: _focusedDay,
-                  calendarFormat: _calendarFormat,
-                  selectedDayPredicate: (day) =>
-                      isSameDay(_selectedDay, day),
-                  onDaySelected: (selectedDay, focusedDay) {
-                    setState(() {
-                      _selectedDay = selectedDay;
-                      _focusedDay = focusedDay;
-                    });
-                  },
-                  onFormatChanged: (format) {
-                    setState(() {
-                      _calendarFormat = format;
-                    });
-                  },
-                  onPageChanged: (focusedDay) {
-                    _focusedDay = focusedDay;
-                  },
-                  headerStyle: const HeaderStyle(
-                    titleTextStyle: TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
+                child: SizedBox(
+                  height: 420,
+                  child: SfCalendar(
+                    view: CalendarView.month,
+                    dataSource: LeaveDataSource(leaveAppointments),
+
+                    todayHighlightColor: Colors.green,
+
+                    selectionDecoration: BoxDecoration(
+                      color: Colors.blue.withOpacity(0.3),
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                    formatButtonVisible: true,
-                    formatButtonShowsNext: false,
-                    formatButtonTextStyle: TextStyle(color: Colors.white),
-                    formatButtonDecoration: BoxDecoration(
-                      color: Colors.black38,
-                      borderRadius: BorderRadius.all(Radius.circular(8)),
+
+                    monthCellBuilder: monthCellBuilder,
+
+                    specialRegions: holidayRegions,
+
+                    monthViewSettings: const MonthViewSettings(
+                      appointmentDisplayMode:
+                          MonthAppointmentDisplayMode.none, // Disable dot
+                      showTrailingAndLeadingDates: true,
                     ),
-                    leftChevronIcon:
-                        Icon(Icons.chevron_left, color: Colors.white),
-                    rightChevronIcon:
-                        Icon(Icons.chevron_right, color: Colors.white),
-                  ),
-                  daysOfWeekStyle: const DaysOfWeekStyle(
-                    weekendStyle: TextStyle(color: Colors.white),
-                    weekdayStyle: TextStyle(color: Colors.white),
-                  ),
-                  calendarStyle: const CalendarStyle(
-                    todayDecoration: BoxDecoration(
-                      color: Colors.blue,
-                      shape: BoxShape.circle,
+
+                    headerStyle: const CalendarHeaderStyle(
+                      textStyle: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
-                    selectedDecoration: BoxDecoration(
-                      color: Colors.green,
-                      shape: BoxShape.circle,
+
+                    viewHeaderStyle: const ViewHeaderStyle(
+                      dayTextStyle: TextStyle(color: Colors.white),
                     ),
-                    weekendTextStyle: TextStyle(color: Colors.white),
-                    defaultTextStyle: TextStyle(color: Colors.white),
+
+                    cellBorderColor: Colors.white24,
                   ),
                 ),
               ),
@@ -422,24 +668,82 @@ class _DashboardPageState extends State<DashboardPage> {
           unselectedItemColor: Colors.white54,
           items: const [
             BottomNavigationBarItem(
-              icon: Icon(Icons.dashboard),
-              label: "Dashboard",
-            ),
+                icon: Icon(Icons.dashboard), label: "Dashboard"),
             BottomNavigationBarItem(
-              icon: Icon(Icons.calendar_month),
-              label: "Apply Leave",
-            ),
+                icon: Icon(Icons.calendar_month), label: "Apply Leave"),
             BottomNavigationBarItem(
-              icon: Icon(Icons.history),
-              label: "Leave History",
-            ),
+                icon: Icon(Icons.history), label: "Leave History"),
             BottomNavigationBarItem(
-              icon: Icon(Icons.person),
-              label: "Profile",
-            ),
+                icon: Icon(Icons.person), label: "Profile"),
           ],
         ),
       ),
     );
+  }
+
+  // ===========================================================================
+  Widget statusBox(String title, int count, Color color) {
+    return Container(
+      width: 100,
+      padding: const EdgeInsets.symmetric(vertical: 16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF2E2A61),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Column(
+        children: [
+          Text(
+            "$count",
+            style: TextStyle(
+              fontSize: 22,
+              fontWeight: FontWeight.bold,
+              color: color,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(title, style: const TextStyle(color: Colors.white)),
+        ],
+      ),
+    );
+  }
+
+  // ===========================================================================
+  void _onNavTap(int index) {
+    if (!mounted) return;
+
+    setState(() => _selectedIndex = index);
+
+    switch (index) {
+      case 0:
+        Navigator.pushReplacementNamed(context, '/dashboard');
+        break;
+      case 1:
+        Navigator.pushReplacementNamed(context, '/apply');
+        break;
+      case 2:
+        Navigator.pushReplacementNamed(context, '/history');
+        break;
+      case 3:
+        Navigator.pushReplacementNamed(context, '/profile');
+        break;
+    }
+  }
+
+  // ===========================================================================
+  String formatDatePretty(String iso) {
+    try {
+      if (iso == "" || iso == "null") return "-";
+      final date = DateTime.parse(iso).toLocal();
+      const monthNames = [
+        "",
+        "January", "February", "March",
+        "April", "May", "June",
+        "July", "August", "September",
+        "October", "November", "December",
+      ];
+      return "${date.day} ${monthNames[date.month]} ${date.year}";
+    } catch (_) {
+      return "-";
+    }
   }
 }
