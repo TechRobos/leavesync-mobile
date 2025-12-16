@@ -7,6 +7,7 @@ import 'package:printing/printing.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:leavesync/services/api_service.dart';
 
 class LeaveHistoryPage extends StatefulWidget {
   const LeaveHistoryPage({super.key});
@@ -76,8 +77,7 @@ class _LeaveHistoryPageState extends State<LeaveHistoryPage> {
     return;
   }
 
-  final uri = Uri.parse("http://192.168.0.55:8000/api/leave/search")
-      .replace(queryParameters: {
+  final uri = ApiService.leaveSearch({
     "user_id": userId.toString(),
   });
 
@@ -642,8 +642,6 @@ Future<void> submitSearch() async {
   if (!confirmed) return;
 
   try {
-    String apiUrl = "http://192.168.0.55:8000/api/leave/search";
-
     Map<String, String> queryParams = {};
 
     if (reasonSearchController.text.isNotEmpty) {
@@ -666,8 +664,7 @@ Future<void> submitSearch() async {
       queryParams['end_date'] = filterEndDate!.toIso8601String();
     }
 
-    final uri = Uri.parse(apiUrl).replace(queryParameters: queryParams);
-
+    final uri = ApiService.leaveSearch(queryParams);
     final response = await http.get(uri);
 
     if (response.statusCode == 200) {
