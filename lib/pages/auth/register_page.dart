@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'dart:ui';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:leavesync/services/api_service.dart';
 
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key});
@@ -300,7 +301,7 @@ class _RegisterPageState extends State<RegisterPage> {
     }
 
     Future<void> registerUser() async {
-  final url = Uri.parse("http://192.168.0.55:8000/api/register");
+  final url = ApiService.register();
 
   final response = await http.post(
     url,
